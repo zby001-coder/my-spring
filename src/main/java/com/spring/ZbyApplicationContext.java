@@ -2,6 +2,7 @@ package com.spring;
 
 import java.io.File;
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Type;
 import java.net.URLDecoder;
 import java.util.LinkedList;
@@ -17,6 +18,10 @@ public class ZbyApplicationContext {
     private static final String CLASS_SUFFIX = ".class";
     private String contextClassPath;
     private List<String> classNames;
+    /**
+     * 单例bean创建时使用的锁，通过synchronize一个公共对象来实现加锁
+     */
+    private final Object createSingletonBeanLock = new Object();
     /**
      * 单例池
      */
@@ -47,21 +52,80 @@ public class ZbyApplicationContext {
     private Object createBean(String beanName) {
         BeanDefinition beanDefinition = definitionPool.get(beanName);
         Object bean = null;
-        Type type = beanDefinition.getType();
         try {
             if (beanDefinition.isPrototype()) {
-                bean = ((Class) type).newInstance();
-                singletonBeanPool.put(beanName, bean);
+                bean = createPrototypeBean(beanName);
             } else {
-                bean = singletonBeanPool.get(beanName);
-                if (bean == null) {
-                    bean = ((Class) type).newInstance();
-                    singletonBeanPool.put(beanName, bean);
-                }
+                bean = createSingletonBean(beanName);
             }
+            injectFields(bean, beanDefinition);
         } catch (InstantiationException | IllegalAccessException e) {
             e.printStackTrace();
         }
+        return bean;
+    }
+
+    /**
+     * 注入bean的字段，通过反射实现
+     *
+     * @param o
+     * @param beanDefinition
+     * @throws IllegalAccessException
+     */
+    public void injectFields(Object o, BeanDefinition beanDefinition) throws IllegalAccessException {
+        Class clazz = (Class) beanDefinition.getType();
+        Field[] fields = clazz.getDeclaredFields();
+        //变量bean的字段
+        for (Field field : fields) {
+            field.setAccessible(true);
+            //如果是autowired，就注入这个bean
+            if (field.isAnnotationPresent(Autowired.class)) {
+                String name = field.getName();
+                //调用createBean，如果是单例就会返回map中的值，如果是原型就会返回新建的值
+                Object bean = createBean(name);
+                field.set(o, bean);
+            }
+        }
+    }
+
+    /**
+     * 创建单例bean，使用双重锁+synchronize来做线程同步
+     *
+     * @param beanName
+     * @return
+     * @throws InstantiationException
+     * @throws IllegalAccessException
+     */
+    private Object createSingletonBean(String beanName) throws InstantiationException, IllegalAccessException {
+        if (singletonBeanPool.get(beanName) != null) {
+            return singletonBeanPool.get(beanName);
+        } else {
+            synchronized (createSingletonBeanLock) {
+                if (singletonBeanPool.get(beanName) == null) {
+                    BeanDefinition beanDefinition = definitionPool.get(beanName);
+                    Type type = beanDefinition.getType();
+                    Object bean = ((Class) type).newInstance();
+                    singletonBeanPool.put(beanName, bean);
+                    return bean;
+                } else {
+                    return singletonBeanPool.get(beanName);
+                }
+            }
+        }
+    }
+
+    /**
+     * 创建原型bean
+     *
+     * @param beanName
+     * @return
+     * @throws InstantiationException
+     * @throws IllegalAccessException
+     */
+    private Object createPrototypeBean(String beanName) throws InstantiationException, IllegalAccessException {
+        BeanDefinition beanDefinition = definitionPool.get(beanName);
+        Type type = beanDefinition.getType();
+        Object bean = ((Class) type).newInstance();
         return bean;
     }
 
